@@ -2,14 +2,16 @@
 
 use crate::dep_types::{Constraint, Lock, LockPackage, Package, Rename, Req, ReqType, Version};
 use crate::util::{abort, Os};
-use crossterm::{Color, Colored};
+
 use regex::Regex;
 use serde::Deserialize;
 use std::{collections::HashMap, env, error::Error, fs, path::PathBuf, str::FromStr};
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use structopt::StructOpt;
+use termcolor::{Color, ColorChoice};
 
 mod build;
 mod commands;
@@ -42,6 +44,10 @@ struct Opt {
 
     #[structopt(short = "ms", long)]
     ms: Vec<String>,
+
+    /// Force a color option: auto (default), always, ansi, never
+    #[structopt(short, long)]
+    color: Option<String>,
 }
 
 #[derive(StructOpt, Debug)]
@@ -529,10 +535,10 @@ impl Config {
             result.push_str(&("py_version = \"3.8\"".to_owned() + "\n"));
         }
         if let Some(vers) = self.version {
-            result.push_str(&(format!("version = \"{}\"", vers.to_string2()) + "\n"));
+            result.push_str(&(format!("version = \"{}\"", vers.to_string() + "\n")));
         } else {
             result.push_str("version = \"0.1.0\"");
-            result.push_str("\n");
+            result.push('\n');
         }
         if !self.authors.is_empty() {
             result.push_str("authors = [\"");
@@ -554,30 +560,56 @@ impl Config {
 
         // todo: More fields
 
-        result.push_str("\n");
+        result.push('\n');
         result.push_str("[tool.pyflow.scripts]\n");
         for (name, mod_fn) in &self.scripts {
             result.push_str(&(format!("{} = \"{}\"", name, mod_fn) + "\n"));
         }
 
-        result.push_str("\n");
+        result.push('\n');
         result.push_str("[tool.pyflow.dependencies]\n");
         for dep in &self.reqs {
             result.push_str(&(dep.to_cfg_string() + "\n"));
         }
 
-        result.push_str("\n");
+        result.push('\n');
         result.push_str("[tool.pyflow.dev-dependencies]\n");
         for dep in &self.dev_reqs {
             result.push_str(&(dep.to_cfg_string() + "\n"));
         }
 
-        result.push_str("\n"); // trailing newline
+        result.push('\n'); // trailing newline
 
         if fs::write(file, result).is_err() {
             abort("Problem writing `pyproject.toml`")
         }
     }
+}
+
+/// Cli Config to hold command line options
+struct CliConfig {
+    pub color_choice: ColorChoice,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            color_choice: ColorChoice::Auto,
+        }
+    }
+}
+
+impl CliConfig {
+    pub fn current() -> Arc<CliConfig> {
+        CLI_CONFIG.with(|c| c.read().unwrap().clone())
+    }
+    pub fn make_current(self) {
+        CLI_CONFIG.with(|c| *c.write().unwrap() = Arc::new(self))
+    }
+}
+
+thread_local! {
+    static CLI_CONFIG: RwLock<Arc<CliConfig>> = RwLock::new(Default::default());
 }
 
 /// Create a template directory for a python project.
@@ -608,17 +640,19 @@ __pypackages__/
     fs::write(&format!("{}/.gitignore", name), gitignore_init)?;
     fs::write(&format!("{}/README.md", name), readme_init)?;
 
-    let mut cfg = Config::default();
-    cfg.name = Some(name.to_string());
-    cfg.authors = util::get_git_author();
-    cfg.py_version = Some(util::prompt_py_vers());
+    let cfg = Config {
+        name: Some(name.to_string()),
+        authors: util::get_git_author(),
+        py_version: Some(util::prompt_py_vers()),
+        ..Default::default()
+    };
 
     cfg.write_file(&PathBuf::from(format!("{}/pyproject.toml", name)));
 
     if commands::git_init(Path::new(name)).is_err() {
         util::print_color(
             "Unable to initialize a git repo for your project",
-            Color::DarkYellow,
+            Color::Yellow, // Dark
         );
     };
 
@@ -744,29 +778,12 @@ fn sync_deps(
         // Powershell  doesn't like emojis
         // todo format literal issues, so repeating this whole statement.
         #[cfg(target_os = "windows")]
-        println!(
-            "Installing {}{}{} {} ...",
-            Colored::Fg(Color::Cyan),
-            &name,
-            Colored::Fg(Color::Reset),
-            &version
-        );
+        util::print_color_(&format!("Installing {}", &name), Color::Cyan);
         #[cfg(target_os = "linux")]
-        println!(
-            "⬇ Installing {}{}{} {} ...",
-            Colored::Fg(Color::Cyan),
-            &name,
-            Colored::Fg(Color::Reset),
-            &version
-        );
+        util::print_color_(&format!("⬇ Installing {}", &name), Color::Cyan);
         #[cfg(target_os = "macos")]
-        println!(
-            "⬇ Installing {}{}{} {} ...",
-            Colored::Fg(Color::Cyan),
-            &name,
-            Colored::Fg(Color::Reset),
-            &version
-        );
+        util::print_color_(&format!("⬇ Installing {}", &name), Color::Cyan);
+        println!(" {} ...", &version.to_string_color());
 
         if install::download_and_install_package(
             name,
@@ -809,7 +826,7 @@ fn sync_deps(
             install::rename_metadata(
                 &paths
                     .lib
-                    .join(&format!("{}-{}.dist-info", name, version.to_string2())),
+                    .join(&format!("{}-{}.dist-info", name, version.to_string())),
                 name,
                 new,
             );
@@ -927,6 +944,7 @@ fn find_deps_from_script(file_path: &Path) -> Vec<String> {
                             .replace("\"", "")
                             .replace("'", "")
                     })
+                    .filter(|d| !d.is_empty())
                     .collect();
             }
         }
@@ -957,7 +975,7 @@ fn run_script(
     // todo: Consider a metadata file, but for now, we'll use folders
     //    let scripts_data_path = script_env_path.join("scripts.toml");
 
-    let env_path = script_env_path.join(&filename);
+    let env_path = util::canon_join(script_env_path, &filename);
     if !env_path.exists() {
         fs::create_dir_all(&env_path).expect("Problem creating environment for the script");
     }
@@ -978,7 +996,7 @@ fn run_script(
 
         fs::File::create(&py_vers_path)
             .expect("Problem creating a file to store the Python version for this script");
-        fs::write(py_vers_path, &cfg_vers.to_string2())
+        fs::write(py_vers_path, &cfg_vers.to_string())
             .expect("Problem writing Python version file.");
     }
 
@@ -1134,10 +1152,7 @@ fn sync(
             .map(|(_, name, version)| {
                 format!(
                     "{} {} pypi+https://pypi.org/pypi/{}/{}/json",
-                    name,
-                    version.to_string2(),
-                    name,
-                    version.to_string2(),
+                    name, version, name, version,
                 )
             })
             .collect();
@@ -1266,9 +1281,28 @@ fn main() {
     #[cfg(target_os = "macos")]
     let os = Os::Mac;
 
+    let opt = Opt::from_args();
+    // Handle color option
+    let choice = match opt.color.unwrap_or_else(|| String::from("auto")).as_str() {
+        "always" => ColorChoice::Always,
+        "ansi" => ColorChoice::AlwaysAnsi,
+        "auto" => {
+            if atty::is(atty::Stream::Stdout) {
+                ColorChoice::Auto
+            } else {
+                ColorChoice::Never
+            }
+        }
+        _ => ColorChoice::Never,
+    };
+
+    CliConfig {
+        color_choice: choice,
+    }
+    .make_current();
+
     // Handle commands that don't involve operating out of a project before one that do, with setup
     // code in-between.
-    let opt = Opt::from_args();
     let subcmd = match opt.subcmds {
         Some(sc) => sc,
         None => {
@@ -1357,7 +1391,7 @@ fn main() {
                 "To get started, run `pyflow new projname` to create a project folder, or \
             `pyflow init` to start a project in this folder. For a list of what you can do, run \
             `pyflow help`.",
-                Color::DarkCyan,
+                Color::Cyan, // Dark
             );
             return;
         }

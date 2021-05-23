@@ -1,11 +1,11 @@
 use crate::util::print_color;
 use crate::{commands, dep_types::Version, util};
-use crossterm::{Color, Colored};
 use flate2::read::GzDecoder;
 use regex::Regex;
 use ring::digest;
 use std::{fs, io, io::BufRead, path::Path, process::Command};
 use tar::Archive;
+use termcolor::Color;
 
 #[derive(Copy, Clone, Debug)]
 pub enum PackageType {
@@ -173,10 +173,10 @@ pub fn download_and_install_package(
     rename: &Option<(u32, String)>,
 ) -> Result<(), reqwest::Error> {
     if !paths.lib.exists() {
-        fs::create_dir(&paths.lib).expect("Problem creating lib directory");
+        fs::create_dir_all(&paths.lib).expect("Problem creating lib directory");
     }
     if !paths.cache.exists() {
-        fs::create_dir(&paths.cache).expect("Problem creating cache directory");
+        fs::create_dir_all(&paths.cache).expect("Problem creating cache directory");
     }
     let archive_path = paths.cache.join(filename);
 
@@ -269,7 +269,7 @@ pub fn download_and_install_package(
                                                 f.path(),
                                                 e
                                             ),
-                                            Color::DarkYellow,
+                                            Color::Yellow, // Dark
                                         );
                                         let f_path =
                                             f.path().expect("Problem getting path from archive");
@@ -290,7 +290,7 @@ pub fn download_and_install_package(
                                         {
                                             print_color(
                                                 "Problem creating dummy readme",
-                                                Color::DarkYellow,
+                                                Color::Yellow, // Dark
                                             );
                                         }
                                     }
@@ -488,7 +488,11 @@ pub fn download_and_install_package(
 
 pub fn uninstall(name_ins: &str, vers_ins: &Version, lib_path: &Path) {
     #[cfg(target_os = "windows")]
-    println!("Uninstalling {}: {}...", name_ins, vers_ins.to_string());
+    println!(
+        "Uninstalling {}: {}...",
+        name_ins,
+        vers_ins.to_string_color()
+    );
     #[cfg(target_os = "linux")]
     println!("🗑 Uninstalling {}: {}...", name_ins, vers_ins.to_string());
     #[cfg(target_os = "macos")]
@@ -537,12 +541,10 @@ pub fn uninstall(name_ins: &str, vers_ins: &Version, lib_path: &Path) {
             // Some packages include a .py file directly in the lib directory instead of a folder.
             // Check that if removing the folder fails.
             if fs::remove_file(lib_path.join(&format!("{}.py", folder_name))).is_err() {
-                println!(
-                    "{}Problem uninstalling {} {}",
-                    Colored::Fg(Color::DarkRed),
-                    name_ins,
-                    vers_ins.to_string(),
-                )
+                print_color(
+                    &format!("Problem uninstalling {} {}", name_ins, vers_ins.to_string(),),
+                    Color::Red, // Dark
+                );
             }
         }
     }
@@ -556,17 +558,19 @@ pub fn uninstall(name_ins: &str, vers_ins: &Version, lib_path: &Path) {
     };
 
     if !meta_folder_removed {
-        println!(
-            "{}Problem uninstalling metadata for {}: {}",
-            Colored::Fg(Color::DarkRed),
-            name_ins,
-            vers_ins.to_string(),
-        )
+        print_color(
+            &format!(
+                "Problem uninstalling metadata for {}: {}",
+                name_ins,
+                vers_ins.to_string_color(),
+            ),
+            Color::Red, // Dark
+        );
     }
 
     // Remove the data directory, if it exists.
     fs::remove_dir_all(lib_path.join(format!("{}-{}.data", name_ins, vers_ins.to_string())))
-        .unwrap_or_else(|_| ());
+        .unwrap_or(());
 
     // Remove console scripts.
     remove_scripts(&[name_ins.into()], &lib_path.join("../bin"));

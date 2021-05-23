@@ -5,11 +5,11 @@ use crate::{
     util,
 };
 
-use crossterm::Color;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::str::FromStr;
+use termcolor::Color;
 
 #[derive(Debug, Deserialize)]
 struct WarehouseInfo {
@@ -71,17 +71,7 @@ pub fn get_version_info(name: &str) -> Result<(String, Version, Vec<Version>), D
     let all_versions = data
         .releases
         .keys()
-        .filter_map(|v| {
-            if Version::from_str(v).is_ok() {
-                Some(
-                    Version::from_str(v)
-                        .expect("Trouble parsing version while getting version info"),
-                )
-            } else {
-                None
-            }
-        })
-        // todo: way to do this in one step, like filter_map?
+        .filter_map(|v| Version::from_str(v).ok())
         .collect();
 
     match Version::from_str(&data.info.version) {
@@ -106,7 +96,7 @@ pub fn get_warehouse_release(
     let data = get_warehouse_data(name)?;
 
     // If there are 0s in the version, and unable to find one, try 1 and 2 digit versions on Pypi.
-    let mut release_data = data.releases.get(&version.to_string2());
+    let mut release_data = data.releases.get(&version.to_string());
     if release_data.is_none() && version.patch == 0 {
         release_data = data.releases.get(&version.to_string_med());
         if release_data.is_none() && version.minor == 0 {
@@ -134,14 +124,7 @@ impl ReqCache {
     fn reqs(&self) -> Vec<Req> {
         self.requires_dist
             .iter()
-            // todo: way to filter ok?
-            .filter_map(|vr| {
-                if Req::from_str(vr, true).is_ok() {
-                    Some(Req::from_str(vr, true).unwrap())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|vr| Req::from_str(vr, true).ok())
             //            .expect("Problem parsing req: ")  // todo how do I do this?
             .collect()
     }
@@ -161,7 +144,7 @@ fn get_req_cache_multiple(
     // parse strings here.
     let mut packages2 = HashMap::new();
     for (name, versions) in packages.iter() {
-        let versions = versions.iter().map(Version::to_string2).collect();
+        let versions = versions.iter().map(Version::to_string).collect();
         packages2.insert(name.to_owned(), versions);
     }
 
@@ -495,7 +478,7 @@ fn make_renamed_packs(
              your package may not be published unless this is resolved...",
             name
         ),
-        Color::DarkYellow,
+        Color::Yellow, // Dark
     );
 
     let dep_display: Vec<String> = deps
